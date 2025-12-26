@@ -156,7 +156,7 @@ async function updateFile(
 
   const body = {
     message: "chore: auto update README timestamp",
-    content: base64EncodeUnicode(content),
+    content: base64EncodeUtf8(content),
     sha,
     branch,
     committer: {
@@ -179,6 +179,7 @@ async function updateFile(
     throw new Error(`提交失败: ${res.status}`);
   }
 }
+
 
 // ================= README 时间戳逻辑 =================
 
@@ -212,22 +213,11 @@ function updateTimestampSection(content) {
 
 // ================= 工具函数 =================
 
-function base64EncodeUnicode(str) {
-  return btoa(
-    encodeURIComponent(str).replace(
-      /%([0-9A-F]{2})/g,
-      (_, p1) => String.fromCharCode("0x" + p1)
-    )
-  );
-}
-
-function pad(n) {
-  return String(n).padStart(2, "0");
-}
-
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj, null, 2), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  });
+function base64EncodeUtf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+  return btoa(binary);
 }
