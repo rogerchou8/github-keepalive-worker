@@ -1,61 +1,134 @@
-````md
-# github-keepalive-worker
+# GitHub KeepAlive Worker
 
-一个基于 **Cloudflare Workers** 的 GitHub 仓库保活（Keep Alive）与自愈更新工具。
+一个基于 **Cloudflare Workers** 的轻量级保活服务，用于 **通过 API 自动修改 GitHub 仓库文件内容**，从而触发仓库活动，避免关联项目因长期无提交而进入休眠状态。
 
-当外部系统检测到项目不可达或异常时，可通过调用本 Worker 的接口，**自动更新 GitHub 仓库文件（如 README）**，以触发仓库活跃度刷新，并具备 **幂等控制与安全鉴权**，避免重复更新。
-
----
-
-## ✨ 核心特性
-
-- 🚀 **HTTP 接口触发**（非定时任务）
-- 🔐 **Token 鉴权**，防止未授权调用
-- 🧱 **KV 幂等控制**：3 小时内只执行一次更新
-- 📝 **自动更新 GitHub 文件内容**
-- 🌏 **支持中文与 Emoji（UTF-8 安全）**
-- 📊 **完整日志输出，便于排障**
-- ☁️ **完全运行于 Cloudflare Workers，无服务器依赖**
+该项目支持 **安全鉴权、幂等控制、UTF-8 内容处理、GitHub Contents API**，适合部署为长期稳定运行的自动化组件。
 
 ---
 
-## 🧩 典型使用场景
+## ✨ 功能特性
 
-- 项目部署在免费平台（如 Cloudflare Pages、Railway、Render 等），需要定期“保活”
-- 上游 Worker / 监控系统在检测失败后，触发一次 GitHub 更新
-- 不希望使用 GitHub Actions 定时任务
-- 希望通过外部信号驱动 GitHub 仓库的自愈行为
+* 🔐 **Token 鉴权接口**
+  通过固定 Token 控制部署接口访问，避免未授权调用
+
+* 🧱 **幂等保护（KV）**
+  使用 Cloudflare KV 记录部署状态，3 小时内仅允许一次生效修改
+
+* 📝 **GitHub 文件自动更新**
+  基于 GitHub Contents API 读取并更新指定文件（如 README）
+
+* 🌍 **UTF-8 安全 Base64 编解码**
+  完整支持中文内容，避免 GitHub API 常见编码错误
+
+* ⚙️ **完全环境变量驱动**
+  无硬编码仓库信息，便于复用与迁移
+
+* 🚀 **零定时器依赖**
+  通过 HTTP API 主动触发，适合与监控/重试机制联动
 
 ---
 
-## 🏗️ 工作原理
+## 🧩 适用场景
 
-1. 客户端向 `/deploy` 发送 `POST` 请求
-2. Worker 校验 `X-Deploy-Token`
-3. 检查 KV 中是否存在 `flag=deployed`
-   - 若存在（3 小时内已执行），直接跳过
-4. 通过 GitHub API 读取目标文件
-5. 更新 README 中的「最后更新时间」区块
-6. 提交修改到 GitHub 仓库
-7. 写入 `flag=deployed`，TTL 为 3 小时
+* GitHub 仓库需要 **定期产生提交活动**
+* 免费平台 / Serverless 项目 **防止因长期无提交被休眠**
+* 将 GitHub 更新动作作为 **下游依赖的触发信号**
+* 构建 **轻量级 DevOps 自动化节点**
 
 ---
 
-## 🔌 API 接口说明
+## 🏗️ 架构说明
 
-### `POST /deploy`
+```text
+┌────────────┐
+│  外部系统  │
+│ (监控/重试)│
+└─────┬──────┘
+      │ POST /deploy
+      ▼
+┌────────────────────┐
+│ Cloudflare Worker  │
+│  - Token 校验      │
+│  - KV 幂等判断     │
+│  - GitHub API 调用 │
+└─────┬──────────────┘
+      │
+      ▼
+┌────────────────────┐
+│ GitHub Repository  │
+│  - 更新目标文件    │
+│  - 产生提交记录    │
+└────────────────────┘
+```
 
-#### 请求头（必须）
+---
+
+## 📦 部署方式
+
+### 1️⃣ 创建 Cloudflare Worker
+
+* 新建 Worker（Module 模式）
+* 将 `worker.js` 内容完整粘贴并保存
+
+---
+
+### 2️⃣ 绑定 KV Namespace
+
+创建一个 KV Namespace，并绑定为：
+
+```text
+STATE_KV
+```
+
+用于记录部署标记（3 小时自动过期）。
+
+---
+
+### 3️⃣ 配置环境变量
+
+| 变量名                  | 必填 | 说明                                                  |
+| -------------------- | -- | --------------------------------------------------- |
+| `DEPLOY_TOKEN`       | ✅  | 调用接口所需的固定鉴权 Token                                   |
+| `GITHUB_TOKEN`       | ✅  | GitHub Personal Access Token（需 `contents:write` 权限） |
+| `GH_CONTENT_API_URL` | ✅  | GitHub Contents API 完整地址                            |
+| `GH_BRANCH`          | ❌  | 目标分支名（默认仓库主分支）                                      |
+
+#### 示例
+
+```text
+DEPLOY_TOKEN=your-random-secret-token
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+GH_CONTENT_API_URL=https://api.github.com/repos/yourname/yourrepo/contents/README.md
+GH_BRANCH=main
+```
+
+---
+
+## 🔐 GitHub Token 权限要求
+
+创建 GitHub PAT 时，至少勾选：
+
+* ✅ `Contents: Read and write`
+
+无需其他权限。
+
+---
+
+## 🔌 API 使用说明
+
+### 调用接口
+
+```http
+POST /deploy
+```
+
+### 请求头
 
 ```http
 X-Deploy-Token: <DEPLOY_TOKEN>
-````
+```
 
-#### 请求体
-
-内容可为空，当前实现不依赖 body 参数。
-
-#### 成功响应
+### 成功响应
 
 ```json
 {
@@ -66,7 +139,7 @@ X-Deploy-Token: <DEPLOY_TOKEN>
 }
 ```
 
-#### 被幂等跳过
+### 幂等跳过响应
 
 ```json
 {
@@ -78,7 +151,7 @@ X-Deploy-Token: <DEPLOY_TOKEN>
 }
 ```
 
-#### 未授权
+### 未授权
 
 ```json
 {
@@ -89,66 +162,27 @@ X-Deploy-Token: <DEPLOY_TOKEN>
 
 ---
 
-## 🔐 环境变量配置
+## 🕒 文件更新逻辑说明
 
-在 Cloudflare Workers 中配置以下环境变量：
+Worker 会在目标文件中：
 
-| 变量名           | 必填 | 说明                                           |
-| ---------------- | ---- | ---------------------------------------------- |
-| `DEPLOY_TOKEN` | ✅   | 接口鉴权 Token                                 |
-| `GITHUB_TOKEN` | ✅   | GitHub Access Token（需 contents: write 权限） |
-| `GH_OWNER`     | ✅   | GitHub 用户名或组织名                          |
-| `GH_REPO`      | ✅   | 仓库名称                                       |
-| `GH_FILE_PATH` | ✅   | 要更新的文件路径（如 `README.md`）           |
-| `GH_BRANCH`    | ❌   | 分支名（默认仓库主分支）                       |
+* 自动插入或更新 `最后更新时间` 区块
+* 同时记录 **UTC 时间** 与 **北京时间**
+* 若内容无变化，则不会提交新 commit
 
-### KV 命名空间
+该设计确保：
 
-| 类型         | 绑定名       |
-| ------------ | ------------ |
-| KV Namespace | `STATE_KV` |
-
-用于存储幂等标记 `flag=deployed`。
+* 提交行为最小化
+* 不引入无意义 diff
 
 ---
 
-## 📝 README 更新时间戳格式
+## 🛡️ 可靠性与安全性
 
-Worker 会在 README 中维护如下区块：
-
-```md
-## 🕒 最后更新时间
-
-**UTC**: `2025-01-01 12:00:00`  
-**北京时间**: `2025-01-01 20:00:00`  
-
-> ⚡ 此时间戳由 Cloudflare Workers 自动更新
-```
-
-* 若区块已存在：更新内容
-* 若不存在：追加到文件末尾
-
----
-
-## 🧠 幂等与安全说明
-
-* 同一仓库**3 小时内最多执行一次更新**
-* 避免并发或重复触发导致 GitHub 提交风暴
-* UTF-8 安全 Base64 编码，支持中文与 Emoji
-* GitHub API 失败会直接中断并返回错误
-
----
-
-## 📦 权限要求（GitHub Token）
-
-GitHub Token 至少需要：
-
-* `contents: write`
-
-如果使用 Fine-grained Token：
-
-* Repository access：选择目标仓库
-* Permissions → Contents：Read & Write
+* 不暴露 GitHub Token
+* 接口具备鉴权与幂等限制
+* 所有异常均记录日志，便于 Worker Dashboard 排查
+* 不依赖定时任务，避免误触发
 
 ---
 
@@ -158,12 +192,13 @@ MIT License
 
 ---
 
-## 🧭 备注
+## 📌 备注
 
-该项目设计为 **基础设施组件**，推荐与：
+本项目设计为 **基础设施型组件**，建议作为：
 
-* 可达性检测 Worker
-* 健康检查脚本
-* 监控告警系统
+* 私有工具仓库
+* 或被其他自动化系统调用的下游服务
 
-组合使用，以实现完整的“检测 → 修复 → 保活”链路。
+如需扩展为多文件、多仓库或批量更新模式，可在当前架构上直接演进。
+
+---
